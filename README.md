@@ -73,9 +73,9 @@ pytest
 Tests use SQLite in-memory and a dummy cache — no Docker, no Postgres, no Redis needed.
 
 ```
-61 tests across 4 modules:
+62 tests across 4 modules:
   hos/           — 12 tests (HOS algorithm accuracy)
-  apps/routing/  — 10 tests (geocoding + routing clients)
+  apps/routing/  — 11 tests (geocoding + routing clients)
   apps/eld/      — 14 tests (log builder + midnight splits)
   apps/trips/    — 25 tests (views + services + selectors)
 ```
@@ -99,6 +99,16 @@ Copy `.env.template` to `.env` and fill in:
 ---
 
 ## API
+
+### `GET /health/`
+
+Returns `200 OK` when the server is up. Use this to check if the backend is reachable before making trip requests.
+
+```json
+{ "status": "ok" }
+```
+
+---
 
 ### `POST /api/trips/plan/`
 
