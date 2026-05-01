@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apps.routing.clients import geocode_address, get_route
+from apps.routing.clients import geocode_address, get_route, get_route_with_legs
 from apps.routing.exceptions import GeocodingError, RoutingError
 
 
@@ -24,6 +24,25 @@ OSRM_HIT = {
                 "type": "LineString",
                 "coordinates": [[-96.797, 32.776], [-90.048, 35.149]],
             },
+            "legs": [],
+        }
+    ],
+}
+
+OSRM_HIT_WITH_LEGS = {
+    "code": "Ok",
+    "routes": [
+        {
+            "distance": 986840.0,
+            "duration": 56880.0,
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[-96.79, 32.77], [-97.33, 32.75], [-90.04, 35.14]],
+            },
+            "legs": [
+                {"distance": 53108.0, "duration": 2160.0},   # ~33 mi / ~0.6 hr
+                {"distance": 729025.0, "duration": 29520.0},  # ~453 mi / ~8.2 hr
+            ],
         }
     ],
 }
@@ -39,9 +58,8 @@ def _mock_response(json_data, status_code=200):
 
 # ── geocode_address ──────────────────────────────────────────────────────────
 
-@patch("apps.routing.clients.time.sleep")
 @patch("apps.routing.clients.httpx.Client")
-def test_geocode_returns_lat_lng_name(mock_client_cls, mock_sleep):
+def test_geocode_returns_lat_lng_name(mock_client_cls):
     mock_client_cls.return_value.__enter__.return_value.get.return_value = (
         _mock_response(NOMINATIM_HIT)
     )
@@ -53,22 +71,8 @@ def test_geocode_returns_lat_lng_name(mock_client_cls, mock_sleep):
     assert "Dallas" in name
 
 
-@patch("apps.routing.clients.time.sleep")
 @patch("apps.routing.clients.httpx.Client")
-def test_geocode_sleeps_for_rate_limit(mock_client_cls, mock_sleep):
-    mock_client_cls.return_value.__enter__.return_value.get.return_value = (
-        _mock_response(NOMINATIM_HIT)
-    )
-
-    geocode_address("Dallas, TX")
-
-    mock_sleep.assert_called_once()
-    assert mock_sleep.call_args[0][0] >= 1.0
-
-
-@patch("apps.routing.clients.time.sleep")
-@patch("apps.routing.clients.httpx.Client")
-def test_geocode_raises_on_empty_response(mock_client_cls, mock_sleep):
+def test_geocode_raises_on_empty_response(mock_client_cls):
     mock_client_cls.return_value.__enter__.return_value.get.return_value = (
         _mock_response([])
     )
@@ -77,9 +81,8 @@ def test_geocode_raises_on_empty_response(mock_client_cls, mock_sleep):
         geocode_address("ZZZ NotARealPlace 99999")
 
 
-@patch("apps.routing.clients.time.sleep")
 @patch("apps.routing.clients.httpx.Client")
-def test_geocode_raises_on_http_error(mock_client_cls, mock_sleep):
+def test_geocode_raises_on_http_error(mock_client_cls):
     import httpx as _httpx
 
     mock_resp = _mock_response({}, status_code=500)
@@ -120,7 +123,6 @@ def test_get_route_coord_order_is_lng_lat(mock_client_cls):
 
     get_route([(32.77, -96.79), (35.14, -90.04)])
 
-    # OSRM expects lng,lat — verify order in URL
     assert "-96.79,32.77" in captured["url"]
     assert "-90.04,35.14" in captured["url"]
 
@@ -172,3 +174,29 @@ def test_get_route_three_waypoints(mock_client_cls):
     get_route([(32.77, -96.79), (32.75, -97.33), (35.14, -90.04)])
 
     assert captured["url"].count(";") == 2
+
+
+# ── get_route_with_legs ──────────────────────────────────────────────────────
+
+@patch("apps.routing.clients.httpx.Client")
+def test_get_route_with_legs_returns_geometry_and_legs(mock_client_cls):
+    mock_client_cls.return_value.__enter__.return_value.get.return_value = (
+        _mock_response(OSRM_HIT_WITH_LEGS)
+    )
+
+    result = get_route_with_legs([(32.77, -96.79), (32.75, -97.33), (35.14, -90.04)])
+
+    assert result["geometry"]["type"] == "LineString"
+    assert len(result["legs"]) == 2
+    assert result["legs"][0]["distance_miles"] == pytest.approx(33.0, abs=0.5)
+    assert result["legs"][1]["distance_miles"] == pytest.approx(453.0, abs=0.5)
+
+
+@patch("apps.routing.clients.httpx.Client")
+def test_get_route_with_legs_raises_on_osrm_error(mock_client_cls):
+    mock_client_cls.return_value.__enter__.return_value.get.return_value = (
+        _mock_response({"code": "NoRoute", "routes": []})
+    )
+
+    with pytest.raises(RoutingError, match="NoRoute"):
+        get_route_with_legs([(32.77, -96.79), (32.75, -97.33), (35.14, -90.04)])

@@ -8,9 +8,13 @@ GEOCODE_RESULTS = [
     (35.14, -90.04, "Memphis, TN, USA"),
 ]
 
-LEG1 = {"distance_miles": 33.0,  "duration_hours": 0.6, "geometry": {"type": "LineString", "coordinates": []}}
-LEG2 = {"distance_miles": 453.0, "duration_hours": 8.2, "geometry": {"type": "LineString", "coordinates": []}}
-FULL = {"distance_miles": 486.0, "duration_hours": 8.8, "geometry": {"type": "LineString", "coordinates": [[-96.79, 32.77], [-90.04, 35.14]]}}
+ROUTE_WITH_LEGS = {
+    "geometry": {"type": "LineString", "coordinates": [[-96.79, 32.77], [-90.04, 35.14]]},
+    "legs": [
+        {"distance_miles": 33.0,  "duration_hours": 0.6},
+        {"distance_miles": 453.0, "duration_hours": 8.2},
+    ],
+}
 
 VALID_INPUT = {
     "current_location":         "Dallas, TX",
@@ -22,28 +26,20 @@ VALID_INPUT = {
 
 def _mock_geocode(address: str):
     mapping = {
-        "Dallas, TX":    GEOCODE_RESULTS[0],
+        "Dallas, TX":     GEOCODE_RESULTS[0],
         "Fort Worth, TX": GEOCODE_RESULTS[1],
-        "Memphis, TN":   GEOCODE_RESULTS[2],
+        "Memphis, TN":    GEOCODE_RESULTS[2],
     }
     return mapping[address]
-
-
-def _mock_get_route(waypoints):
-    if len(waypoints) == 3:
-        return FULL
-    first = waypoints[0]
-    if first == (32.77, -96.79):
-        return LEG1
-    return LEG2
 
 
 @pytest.fixture
 def mock_externals():
     with (
-        patch("apps.trips.services.geocode_address", side_effect=_mock_geocode),
-        patch("apps.trips.services.get_route",       side_effect=_mock_get_route),
-        patch("apps.trips.services.get_cached_plan", return_value=None),
+        patch("apps.trips.services.geocode_address",      side_effect=_mock_geocode),
+        patch("apps.trips.services.time.sleep"),
+        patch("apps.trips.services.get_route_with_legs",  return_value=ROUTE_WITH_LEGS),
+        patch("apps.trips.services.get_cached_plan",      return_value=None),
         patch("apps.trips.services.set_cached_plan"),
     ):
         yield
@@ -109,13 +105,14 @@ def test_service_daily_miles_distributed(mock_externals):
 
 @pytest.mark.django_db
 def test_cache_hit_skips_routing_and_db():
-    cached_plan = {**{"trip_id": "cached-id", "cached": True}}
+    cached_plan = {"trip_id": "cached-id", "cached": True}
 
     with (
-        patch("apps.trips.services.geocode_address", side_effect=_mock_geocode),
-        patch("apps.trips.services.get_route")         as mock_route,
-        patch("apps.trips.services.get_cached_plan",   return_value=cached_plan),
-        patch("apps.trips.services.set_cached_plan")   as mock_set,
+        patch("apps.trips.services.geocode_address",     side_effect=_mock_geocode),
+        patch("apps.trips.services.time.sleep"),
+        patch("apps.trips.services.get_route_with_legs") as mock_route,
+        patch("apps.trips.services.get_cached_plan",     return_value=cached_plan),
+        patch("apps.trips.services.set_cached_plan")     as mock_set,
     ):
         from apps.trips.services import plan_trip_service
         result = plan_trip_service(VALID_INPUT)
@@ -133,7 +130,10 @@ def test_geocoding_error_propagates():
     from apps.routing.exceptions import GeocodingError
     from apps.trips.services import plan_trip_service
 
-    with patch("apps.trips.services.geocode_address", side_effect=GeocodingError("not found")):
+    with (
+        patch("apps.trips.services.geocode_address", side_effect=GeocodingError("not found")),
+        patch("apps.trips.services.time.sleep"),
+    ):
         with pytest.raises(GeocodingError):
             plan_trip_service(VALID_INPUT)
 
@@ -144,9 +144,10 @@ def test_routing_error_propagates():
     from apps.trips.services import plan_trip_service
 
     with (
-        patch("apps.trips.services.geocode_address", side_effect=_mock_geocode),
-        patch("apps.trips.services.get_cached_plan", return_value=None),
-        patch("apps.trips.services.get_route",       side_effect=RoutingError("OSRM down")),
+        patch("apps.trips.services.geocode_address",     side_effect=_mock_geocode),
+        patch("apps.trips.services.time.sleep"),
+        patch("apps.trips.services.get_cached_plan",     return_value=None),
+        patch("apps.trips.services.get_route_with_legs", side_effect=RoutingError("OSRM down")),
     ):
         with pytest.raises(RoutingError):
             plan_trip_service(VALID_INPUT)

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import time
 import uuid
 import logging
 
+from django.db import transaction
+
 from apps.eld.services import build_daily_logs
-from apps.routing.clients import geocode_address, get_route
+from apps.routing.clients import NOMINATIM_RATE_DELAY, geocode_address, get_route_with_legs
 from hos.engine import plan_trip
 
 from .cache import get_cached_plan, make_cache_key, set_cached_plan
@@ -25,7 +28,9 @@ def plan_trip_service(validated_data: dict) -> dict:
     d = validated_data
 
     c_lat,  c_lng,  c_name  = geocode_address(d["current_location"])
+    time.sleep(NOMINATIM_RATE_DELAY)
     p_lat,  p_lng,  p_name  = geocode_address(d["pickup_location"])
+    time.sleep(NOMINATIM_RATE_DELAY)
     dr_lat, dr_lng, dr_name = geocode_address(d["dropoff_location"])
 
     cache_key = make_cache_key(
@@ -37,11 +42,11 @@ def plan_trip_service(validated_data: dict) -> dict:
     if cached:
         return {**cached, "cached": True}
 
-    leg1       = get_route([(c_lat, c_lng),  (p_lat,  p_lng)])
-    leg2       = get_route([(p_lat, p_lng),  (dr_lat, dr_lng)])
-    full_route = get_route([(c_lat, c_lng),  (p_lat,  p_lng), (dr_lat, dr_lng)])
+    route_data = get_route_with_legs([(c_lat, c_lng), (p_lat, p_lng), (dr_lat, dr_lng)])
+    leg1       = route_data["legs"][0]
+    leg2       = route_data["legs"][1]
 
-    hos_result      = plan_trip(
+    hos_result = plan_trip(
         current_lat=c_lat,   current_lng=c_lng,   current_name=c_name,
         pickup_lat=p_lat,    pickup_lng=p_lng,    pickup_name=p_name,
         dropoff_lat=dr_lat,  dropoff_lng=dr_lng,  dropoff_name=dr_name,
@@ -57,7 +62,7 @@ def plan_trip_service(validated_data: dict) -> dict:
     plan_data = {
         **hos_result,
         "trip_id":    str(uuid.uuid4()),
-        "route":      full_route["geometry"],
+        "route":      route_data["geometry"],
         "daily_logs": daily_logs,
         "total_days": len(daily_logs),
         "cached":     False,
@@ -94,24 +99,25 @@ def _persist(
 ) -> None:
     d = validated_data
 
-    trip_req = TripRequest.objects.create(
-        current_location=d["current_location"],
-        current_lat=c_lat, current_lng=c_lng,
-        pickup_location=d["pickup_location"],
-        pickup_lat=p_lat,  pickup_lng=p_lng,
-        dropoff_location=d["dropoff_location"],
-        dropoff_lat=dr_lat, dropoff_lng=dr_lng,
-        current_cycle_used_hours=d["current_cycle_used_hours"],
-    )
+    with transaction.atomic():
+        trip_req = TripRequest.objects.create(
+            current_location=d["current_location"],
+            current_lat=c_lat, current_lng=c_lng,
+            pickup_location=d["pickup_location"],
+            pickup_lat=p_lat,  pickup_lng=p_lng,
+            dropoff_location=d["dropoff_location"],
+            dropoff_lat=dr_lat, dropoff_lng=dr_lng,
+            current_cycle_used_hours=d["current_cycle_used_hours"],
+        )
 
-    TripPlan.objects.create(
-        trip_request=trip_req,
-        total_distance_miles=plan_data["total_distance_miles"],
-        total_driving_hours=plan_data["total_driving_hours"],
-        total_days=plan_data["total_days"],
-        route_geometry=plan_data["route"],
-        stops=plan_data["stops"],
-        eld_segments=plan_data["eld_segments"],
-        daily_logs=plan_data["daily_logs"],
-        cache_key=cache_key,
-    )
+        TripPlan.objects.create(
+            trip_request=trip_req,
+            total_distance_miles=plan_data["total_distance_miles"],
+            total_driving_hours=plan_data["total_driving_hours"],
+            total_days=plan_data["total_days"],
+            route_geometry=plan_data["route"],
+            stops=plan_data["stops"],
+            eld_segments=plan_data["eld_segments"],
+            daily_logs=plan_data["daily_logs"],
+            cache_key=cache_key,
+        )

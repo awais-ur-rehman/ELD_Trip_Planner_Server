@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from .constants import (
     AVERAGE_SPEED_MPH,
@@ -33,8 +33,9 @@ def plan_trip(
     start_time: datetime | None = None,
 ) -> dict:
     if start_time is None:
-        start_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
-        if start_time < datetime.now():
+        now        = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+        start_time = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        if start_time < now:
             start_time += timedelta(days=1)
 
     state = DriverState(
